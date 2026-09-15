@@ -1,0 +1,3 @@
+Deployment Runbook
+
+Engineering deploys services through CI. A pull request must pass unit tests, security checks, and review. Production deployments require an approved change record. Rollback uses the previous signed container image.

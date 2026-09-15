@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    environment:
+      POSTGRES_DB: secure_rag
+      POSTGRES_USER: secure_rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secure_rag -d secure_rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://secure_rag:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/secure_rag
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+  ingestion-worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://secure_rag:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/secure_rag
+    command: ["python", "scripts/ingestion_worker.py"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
