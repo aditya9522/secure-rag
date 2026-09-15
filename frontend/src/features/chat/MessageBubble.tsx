@@ -1,0 +1,8 @@
+import { Bot, FileText, LockKeyhole, MessageSquare, ShieldCheck } from "lucide-react";
+import type { Message } from "../../types";
+import { MarkdownContent } from "./MarkdownContent";
+
+export function MessageBubble({ message, avatar = "ME" }: { message: Message; avatar?: string }) {
+  if (message.role === "user") return <div className="message-row user-row"><div className="user-bubble">{message.content}</div><div className="profile-avatar message-avatar">{avatar}</div></div>;
+  return <div className="message-row"><div className="assistant-avatar"><Bot size={16} /></div><div className="assistant-message">{message.content ? <MarkdownContent content={message.content} /> : message.streaming ? <span className="streaming-placeholder" aria-label="Generating response">Generating…</span> : null}{message.streaming && <span className="streaming-cursor" aria-hidden="true" />}{!message.streaming && message.mode === "grounded" && <div className="message-meta"><span className="grounded-label"><ShieldCheck size={13} /> Source-grounded</span>{message.citations?.map((citation) => <span className="citation-chip" key={citation.document_title}><FileText size={12} />{citation.document_title}</span>)}</div>}{!message.streaming && message.mode === "conversational" && <div className="message-meta"><span className="conversation-label"><MessageSquare size={13} /> Conversational</span><span className="meta-note">No workspace facts used</span></div>}{!message.streaming && message.mode === "refused" && <div className="message-meta"><span className="refused-label"><LockKeyhole size={12} /> Needs authorized evidence</span></div>}</div></div>;
+}
