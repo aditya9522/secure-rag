@@ -65,7 +65,7 @@ def extract_text(filename: str, content: bytes) -> str:
     raise ValueError("Unsupported file type; use .txt, .md, .csv, .json, .pdf, or .docx")
 
 
-def _validate_source_uri(source_uri: str | None) -> str | None:
+def validate_source_uri(source_uri: str | None) -> str | None:
     if source_uri is None:
         return None
     source_uri = source_uri.strip()
@@ -80,6 +80,11 @@ def _validate_source_uri(source_uri: str | None) -> str | None:
     ):
         raise ValueError("source_uri must be an HTTP(S) URI without embedded credentials")
     return source_uri
+
+
+# Keep the former private name available for callers that imported it while
+# the API route adopts the explicit validation helper.
+_validate_source_uri = validate_source_uri
 
 
 def _embed_in_batches(provider: OpenAIProvider, chunks: list[str]) -> list[list[float]]:
@@ -138,7 +143,7 @@ def ingest_document(
         )
     if len(clean_groups) > 50 or any(len(group) > 128 for group in clean_groups):
         raise ValueError("Too many or overly long access groups")
-    source_uri = _validate_source_uri(source_uri)
+    source_uri = validate_source_uri(source_uri)
     doc_hash = sha256(content).hexdigest()
     # A content hash is provenance, not identity: the same bytes can be two
     # independently governed documents with different ACLs and lifecycles.
@@ -156,7 +161,7 @@ def ingest_document(
     }[classification]
     records = []
     for i, (chunk, vector) in enumerate(zip(chunks, embeddings)):
-        chunk_id = f"{document_id}:{i}"
+        chunk_id = f"{document_id}:v{version}:{i}"
         records.append(
             {
                 "id": chunk_id,

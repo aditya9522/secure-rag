@@ -68,7 +68,9 @@ def sanitize_output(text: str) -> tuple[str, list[str]]:
     return result.sanitized_text, result.flags
 
 
-def acl_filter(principal: Principal) -> dict:
+def acl_filter(
+    principal: Principal, active_document_versions: dict[str, int] | None = None
+) -> dict:
     # AND clauses are intentionally generated only from authenticated claims.
     groups = list(
         dict.fromkeys(
@@ -81,14 +83,27 @@ def acl_filter(principal: Principal) -> dict:
         Classification.confidential: 2,
         Classification.restricted: 3,
     }[principal.classification_max]
-    return {
-        "$and": [
-            {"tenant_id": {"$eq": principal.tenant_id}},
-            {"active": {"$eq": True}},
-            {"allowed_groups": {"$in": groups}},
-            {"classification_rank": {"$lte": rank}},
-        ]
-    }
+    clauses = [
+        {"tenant_id": {"$eq": principal.tenant_id}},
+        {"active": {"$eq": True}},
+        {"allowed_groups": {"$in": groups}},
+        {"classification_rank": {"$lte": rank}},
+    ]
+    if active_document_versions is not None:
+        clauses.append(
+            {
+                "$or": [
+                    {
+                        "$and": [
+                            {"document_id": {"$eq": document_id}},
+                            {"version": {"$eq": version}},
+                        ]
+                    }
+                    for document_id, version in active_document_versions.items()
+                ]
+            }
+        )
+    return {"$and": clauses}
 
 
 def is_authorized_metadata(metadata: dict, principal: Principal) -> bool:

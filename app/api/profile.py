@@ -95,6 +95,7 @@ async def list_notifications(
         "document_ingest_failed",
         "member_invited",
         "member_access_updated",
+        "organization_created",
         "profile_updated",
         "refresh_reuse_detected",
     }
@@ -112,6 +113,7 @@ async def list_notifications(
                         "document_ingest_failed",
                         "member_invited",
                         "member_access_updated",
+                        "organization_created",
                     }
                 )
             ),

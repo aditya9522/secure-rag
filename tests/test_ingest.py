@@ -7,9 +7,14 @@ from zipfile import ZipFile
 import pytest
 from fastapi import HTTPException
 
-from app.api.documents import _activate_record_if_indexing, _validate_idempotency_key
-from app.ingest import ingest_document
+from app.api.documents import (
+    _activate_record_if_indexing,
+    _validate_idempotency_key,
+    revoke_document,
+)
+from app.ingest import ingest_document, validate_source_uri
 from app.models import Classification, Principal
+from app.services.document_service import document_snapshot, fail_or_requeue_ingestion_job
 
 
 class FakeProvider:
@@ -61,6 +66,17 @@ class FakeSession:
 
     async def rollback(self):
         self.rolled_back = True
+
+    def add(self, _value):
+        pass
+
+
+class RevokedDocumentSession:
+    def __init__(self, document):
+        self.document = document
+
+    async def scalar(self, _statement):
+        return self.document
 
 
 def test_document_activation_is_conditional_on_indexing_state():
@@ -171,7 +187,93 @@ def test_ingest_activates_only_the_document_vectors():
     )
 
     assert pinecone.activated is True
-    assert pinecone.activated_ids == [f"{result['document_id']}:0"]
+    assert pinecone.activated_ids == [f"{result['document_id']}:v1:0"]
+
+
+def test_ingest_uses_document_version_in_vector_ids_and_metadata():
+    principal = Principal(user_id="u1", tenant_id="tenant-a", groups=["engineering"])
+    pinecone = FakePinecone()
+
+    result = ingest_document(
+        principal=principal,
+        filename="notes.txt",
+        content=b"hello world",
+        classification=Classification.internal,
+        allowed_groups=["engineering"],
+        source_uri=None,
+        provider=FakeProvider([[0.0] * 1536]),
+        pinecone=pinecone,
+        document_id="doc-1",
+        version=2,
+        activate=False,
+    )
+
+    assert result["_record_ids"] == ["doc-1:v2:0"]
+    assert pinecone.records[0]["metadata"]["version"] == 2
+
+
+def test_source_uri_validation_rejects_embedded_credentials():
+    with pytest.raises(ValueError, match="without embedded credentials"):
+        validate_source_uri("https://user:password@example.com/source")
+
+
+def test_revoking_an_already_revoked_document_is_idempotent():
+    organization_id = uuid4()
+    document_id = uuid4()
+    session = RevokedDocumentSession(SimpleNamespace(status="revoked"))
+    principal = Principal(user_id=str(uuid4()), tenant_id=str(organization_id))
+
+    response = asyncio.run(revoke_document(document_id, (principal, session, None)))
+
+    assert response.status_code == 204
+
+
+def test_failed_reindex_restores_the_last_active_document_snapshot():
+    owner_id = uuid4()
+    record = SimpleNamespace(
+        id=uuid4(),
+        owner_user_id=owner_id,
+        title="current.txt",
+        classification=Classification.internal.value,
+        allowed_groups=["engineering"],
+        source_uri=None,
+        source_hash="old-hash",
+        version=1,
+        status="active",
+        chunks_indexed=3,
+        organization_id=uuid4(),
+        updated_at=None,
+    )
+    snapshot = document_snapshot(record)
+    record.title = "replacement.txt"
+    record.version = 2
+    record.status = "indexing"
+    record.chunks_indexed = 0
+    job = SimpleNamespace(
+        id=uuid4(),
+        attempts=3,
+        previous_document=snapshot,
+        status="running",
+        content=b"replacement",
+        locked_until=None,
+        last_error=None,
+        updated_at=None,
+    )
+    session = FakeSession(rowcount=1)
+
+    asyncio.run(
+        fail_or_requeue_ingestion_job(
+            session, job, record, RuntimeError("provider unavailable"), terminal=True
+        )
+    )
+
+    assert record.status == "active"
+    assert record.title == "current.txt"
+    assert record.version == 1
+    assert record.chunks_indexed == 3
+    assert job.previous_document is None
+    assert job.status == "failed"
+    assert session.committed is True
 
 
 def test_ingest_defaults_empty_access_groups_to_the_organization():

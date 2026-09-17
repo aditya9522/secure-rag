@@ -18,7 +18,7 @@ export interface Message {
   content: string;
   createdAt?: string;
   mode?: "grounded" | "conversational" | "refused";
-  citations?: Array<{ document_title: string; score: number }>;
+  citations?: Array<{ document_id: string; document_title: string; chunk_id: string; score: number }>;
   streaming?: boolean;
 }
 

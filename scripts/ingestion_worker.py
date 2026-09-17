@@ -51,8 +51,8 @@ async def run_once() -> bool:
             tenant_id=str(job.organization_id),
             groups=membership.groups or [],
             classification_max=membership.classification_max,
-            can_manage_access=user.is_system_admin
-            or membership.role in {OrganizationRole.owner.value, OrganizationRole.admin.value},
+            can_manage_access=membership.role
+            in {OrganizationRole.owner.value, OrganizationRole.admin.value},
         )
         try:
             await process_ingestion_job(

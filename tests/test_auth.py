@@ -1,13 +1,20 @@
+import asyncio
+from types import SimpleNamespace
+from uuid import uuid4
+
 import jwt
 import pytest
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
+from starlette.requests import Request
 
 from app.api.admin import _organization_creation_conflict
-from app.api.auth import attach_refresh_cookie
+from app.api.auth import attach_refresh_cookie, validate_cookie_request_origin
+from app.api.organizations import _assert_can_grant_role, invite_member
 from app.config import Settings, settings
 from app.models import InviteMemberRequest, UpdateMemberRequest, UpdateProfileRequest
 from app.security.auth import decode_principal
+from app.services.auth_service import access_token
 
 
 def test_default_jwt_secret_fails_closed(monkeypatch):
@@ -104,6 +111,95 @@ def test_refresh_cookie_is_available_to_organization_switch_and_logout():
     response.delete_cookie("refresh_token", path="/")
     assert 'refresh_token=""' in response.headers["set-cookie"]
     assert "Path=/" in response.headers["set-cookie"]
+
+
+def test_production_refresh_cookie_supports_cross_site_frontend(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "production")
+
+    response = attach_refresh_cookie(JSONResponse({}), "refresh-token")
+    cookie = response.headers["set-cookie"]
+
+    assert "SameSite=none" in cookie
+    assert "Secure" in cookie
+
+
+def _request_with_origin(origin: str | None) -> Request:
+    headers = [] if origin is None else [(b"origin", origin.encode())]
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "https",
+            "path": "/auth/logout",
+            "raw_path": b"/auth/logout",
+            "query_string": b"",
+            "headers": headers,
+            "server": ("api.example.com", 443),
+            "client": ("127.0.0.1", 1234),
+        }
+    )
+
+
+def test_cookie_request_origin_accepts_configured_frontend(monkeypatch):
+    monkeypatch.setattr(settings, "cors_allowed_origins", "https://app.example.com")
+
+    validate_cookie_request_origin(_request_with_origin("https://app.example.com"))
+
+
+def test_cookie_request_origin_rejects_missing_or_untrusted_origin(monkeypatch):
+    monkeypatch.setattr(settings, "cors_allowed_origins", "https://app.example.com")
+
+    with pytest.raises(Exception) as missing:
+        validate_cookie_request_origin(_request_with_origin(None))
+    assert getattr(missing.value, "status_code", None) == 403
+
+    with pytest.raises(Exception) as untrusted:
+        validate_cookie_request_origin(_request_with_origin("https://attacker.example"))
+    assert getattr(untrusted.value, "status_code", None) == 403
+
+
+def test_authentication_cannot_be_disabled_with_an_unauthorized_fallback():
+    with pytest.raises(ValueError, match="REQUIRE_AUTH=false is unsupported"):
+        Settings(_env_file=None, require_auth=False)
+
+
+def test_only_organization_owners_can_grant_administrator_access():
+    _assert_can_grant_role("owner", "admin")
+    _assert_can_grant_role("admin", "member")
+
+    with pytest.raises(Exception) as exc_info:
+        _assert_can_grant_role("admin", "admin")
+    assert getattr(exc_info.value, "status_code", None) == 403
+
+
+def test_invitation_route_rejects_admin_grant_from_non_owner():
+    payload = InviteMemberRequest(
+        email="member@example.com",
+        full_name="Member User",
+        role="admin",
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            invite_member(
+                payload,
+                (SimpleNamespace(tenant_id=str(uuid4())), None, SimpleNamespace(role="admin")),
+            )
+        )
+    assert getattr(exc_info.value, "status_code", None) == 403
+
+
+def test_system_admin_member_does_not_receive_tenant_admin_claim(monkeypatch):
+    secret = "a" * 40
+    monkeypatch.setattr(settings, "jwt_secret", secret)
+    user = SimpleNamespace(id=uuid4(), is_system_admin=True)
+    organization = SimpleNamespace(id=uuid4())
+    membership = SimpleNamespace(role="member", groups=[], classification_max="internal")
+
+    principal = decode_principal(access_token(user, organization, membership))
+
+    assert principal.can_manage_access is False
 
 
 def test_organization_creation_does_not_return_database_error_details():

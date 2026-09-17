@@ -116,8 +116,6 @@ class Settings(BaseSettings):
                 "CORS_ALLOWED_ORIGINS must be a comma-separated HTTP(S) origin allowlist"
             )
         if self.environment == "production":
-            if not self.require_auth:
-                raise ValueError("REQUIRE_AUTH must be true in production")
             if self.allow_local_dev_tokens:
                 raise ValueError("ALLOW_LOCAL_DEV_TOKENS must be false in production")
             if not self.jwt_secret_configured:
@@ -132,6 +130,10 @@ class Settings(BaseSettings):
                 raise ValueError("A shared rate-limit store is required in production")
         elif self.environment != "development" and self.allow_local_dev_tokens:
             raise ValueError("ALLOW_LOCAL_DEV_TOKENS is only permitted in development")
+        if not self.require_auth:
+            raise ValueError(
+                "REQUIRE_AUTH=false is unsupported; use development local tokens with active database identities"
+            )
         return self
 
 

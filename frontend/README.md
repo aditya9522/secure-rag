@@ -28,6 +28,19 @@ is already present.
 
 Set `VITE_API_BASE_URL=http://localhost:8000` to connect to the FastAPI service. The application starts on the sign-in page when no refresh session is available; the workspace is never rendered as an unauthenticated demo. Invitations are opened with `/?invite=<one-time-token>`.
 
+## Netlify deployment
+
+The repository includes a root `netlify.toml` with the correct monorepo settings. If configuring the site in the Netlify UI, use:
+
+- Base directory: `frontend`
+- Build command: `npm run build`
+- Publish directory: `dist`
+- Environment variable: `VITE_API_BASE_URL=https://<your-api-host>`
+
+The publish directory is relative to the base directory. Do not use `frontend` or `frontend/dist` as the publish directory when the base directory is already `frontend`; doing so can publish the Vite source entry instead of the compiled assets. The SPA rewrite in `netlify.toml` keeps direct navigation to application routes working.
+
+The API must allow the deployed Netlify origin in `CORS_ALLOWED_ORIGINS`. Production refresh cookies are configured for cross-site frontend/API deployments, so the API must be served over HTTPS.
+
 ## Security UX
 
 - Organization switching updates the server-issued tenant context.

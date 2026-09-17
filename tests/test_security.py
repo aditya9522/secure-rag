@@ -36,6 +36,22 @@ def test_acl_filter_uses_server_side_claims():
     assert {"classification_rank": {"$lte": 2}} in filt["$and"]
 
 
+def test_acl_filter_limits_results_to_the_active_document_version():
+    p = Principal(user_id="u1", tenant_id="tenant-a", groups=["engineering"])
+    filt = acl_filter(p, {"doc-1": 2})
+
+    assert {
+        "$or": [
+            {
+                "$and": [
+                    {"document_id": {"$eq": "doc-1"}},
+                    {"version": {"$eq": 2}},
+                ]
+            }
+        ]
+    } in filt["$and"]
+
+
 def test_audit_redacts_pii_and_secrets():
     safe = redact_for_log("test@example.com sk-abcdefghijklmnopqrstuvwxyz123456789")
     assert "test@example.com" not in safe

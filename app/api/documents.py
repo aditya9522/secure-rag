@@ -40,7 +40,7 @@ from app.db_models import (
     IngestionJobStatus,
     Membership,
 )
-from app.ingest import ingest_document
+from app.ingest import ingest_document, validate_source_uri
 from app.models import Classification, DocumentSummary, IngestResponse, Principal
 from app.security.policy import can_view_document
 from app.services.document_service import (
@@ -48,8 +48,8 @@ from app.services.document_service import (
 )
 from app.services.document_service import (
     claim_ingestion_job,
+    document_snapshot,
     fail_or_requeue_ingestion_job,
-    mark_document_failed,
 )
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
@@ -103,15 +103,28 @@ async def list_documents(
             ]
         )
     result = await db.execute(
-        select(DocumentRecord)
+        select(DocumentRecord, IngestionJob.last_error)
+        .outerjoin(IngestionJob, IngestionJob.document_id == DocumentRecord.id)
         .where(*conditions)
         .order_by(DocumentRecord.updated_at.desc())
         .offset(offset)
         .limit(limit)
     )
     return [
-        document
-        for document in result.scalars().all()
+        {
+            "id": document.id,
+            "title": document.title,
+            "classification": document.classification,
+            "allowed_groups": document.allowed_groups or [],
+            "source_uri": document.source_uri,
+            "status": document.status,
+            "chunks_indexed": document.chunks_indexed,
+            "created_at": document.created_at,
+            "updated_at": document.updated_at,
+            "last_error": last_error,
+            "can_retry": document.status == DocumentStatus.failed.value,
+        }
+        for document, last_error in result.all()
         if can_view_document(
             status=document.status,
             classification=document.classification,
@@ -136,18 +149,20 @@ async def revoke_document(
     if not document:
         raise HTTPException(404, "Document not found")
 
-    if document.status != DocumentStatus.revoked.value:
-        document.status = DocumentStatus.revoked.value
-        document.updated_at = datetime.now(UTC)
-        db.add(
-            AuditEvent(
-                organization_id=organization_id,
-                user_id=principal_uuid(principal),
-                event_type="document_revoked",
-                event_metadata={"document_id": str(document_id)},
-            )
+    if document.status == DocumentStatus.revoked.value:
+        return JSONResponse(status_code=204, content=None)
+
+    document.status = DocumentStatus.revoked.value
+    document.updated_at = datetime.now(UTC)
+    db.add(
+        AuditEvent(
+            organization_id=organization_id,
+            user_id=principal_uuid(principal),
+            event_type="document_revoked",
+            event_metadata={"document_id": str(document_id)},
         )
-        await db.commit()
+    )
+    await db.commit()
 
     if runtime.pinecone_provider is None:
         raise HTTPException(503, "Retrieval provider is not configured")
@@ -171,6 +186,7 @@ async def upload_document(
     classification: Classification = Form(Classification.internal),  # noqa: B008
     allowed_groups: str = Form(""),
     source_uri: str | None = Form(None),
+    retry_document_id: UUID | None = Form(None),  # noqa: B008
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     auth: tuple[Principal, AsyncSession, Membership] = Depends(org_admin_dep),
 ):
@@ -182,7 +198,22 @@ async def upload_document(
         raise HTTPException(400, "Filename required")
     if len(allowed_groups) > 4096:
         raise HTTPException(400, "Access group list is too large")
+    try:
+        source_uri = validate_source_uri(source_uri)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     existing = None
+    if retry_document_id is not None:
+        existing = await db.scalar(
+            select(DocumentRecord).where(
+                DocumentRecord.id == retry_document_id,
+                DocumentRecord.organization_id == UUID(principal.tenant_id),
+            )
+        )
+        if existing is None:
+            raise HTTPException(404, "Document not found")
+        if existing.status != DocumentStatus.failed.value:
+            raise HTTPException(409, "Only failed documents can be retried")
     if idempotency_key:
         existing = await db.scalar(
             select(DocumentRecord).where(
@@ -207,6 +238,9 @@ async def upload_document(
         stored_groups.append(f"user:{principal.user_id}")
     if existing:
         record = existing
+        previous_document = (
+            document_snapshot(existing) if existing.status == DocumentStatus.active.value else None
+        )
         record.owner_user_id = UUID(principal.user_id)
         record.title = safe_filename[:256]
         record.classification = classification.value
@@ -226,6 +260,7 @@ async def upload_document(
             classification=classification.value,
             allowed_groups=stored_groups,
             source_uri=source_uri,
+            previous_document=None,
             source_hash=hashlib.sha256(content).hexdigest(),
             idempotency_key=idempotency_key,
             version=1,
@@ -257,12 +292,14 @@ async def upload_document(
         job.classification = classification.value
         job.allowed_groups = stored_groups
         job.source_uri = source_uri
+        job.previous_document = previous_document
         job.status = IngestionJobStatus.queued.value
         job.attempts = 0
         job.available_at = datetime.now(UTC)
         job.locked_until = None
         job.last_error = None
         job.updated_at = datetime.now(UTC)
+    staged_record_ids: list[str] = []
     try:
         await db.commit()
     except (ValueError, IntegrityError) as exc:
@@ -297,17 +334,11 @@ async def upload_document(
             activate=False,
         )
     except PermissionError as exc:
-        job.status = IngestionJobStatus.failed.value
-        job.last_error = type(exc).__name__
-        job.locked_until = None
-        await mark_document_failed(db, record, principal, type(exc).__name__)
+        await fail_or_requeue_ingestion_job(db, job, record, exc, terminal=True)
         audit("ingest_denied", user_id=principal.user_id, tenant_id=principal.tenant_id)
         raise HTTPException(403, str(exc)) from exc
     except ValueError as exc:
-        job.status = IngestionJobStatus.failed.value
-        job.last_error = type(exc).__name__
-        job.locked_until = None
-        await mark_document_failed(db, record, principal, type(exc).__name__)
+        await fail_or_requeue_ingestion_job(db, job, record, exc, terminal=True)
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         await fail_or_requeue_ingestion_job(db, job, record, exc)
@@ -327,6 +358,7 @@ async def upload_document(
             error=type(exc).__name__,
         )
         raise HTTPException(503, "Document ingestion is temporarily unavailable") from exc
+    staged_record_ids = result["_record_ids"]
     record.chunks_indexed = result["chunks_indexed"]
     record.updated_at = datetime.now(UTC)
     try:
@@ -339,13 +371,13 @@ async def upload_document(
         )
     except Exception as exc:
         await db.rollback()
-        job.status = IngestionJobStatus.failed.value
-        job.last_error = type(exc).__name__
-        job.locked_until = None
-        await mark_document_failed(db, record, principal, type(exc).__name__)
+        await fail_or_requeue_ingestion_job(db, job, record, exc, terminal=True)
         try:
             await runtime.run_provider_operation(
-                runtime.pinecone_provider.delete_document, principal.tenant_id, str(document_id)
+                runtime.pinecone_provider.delete_document,
+                principal.tenant_id,
+                str(document_id),
+                staged_record_ids,
             )
         except Exception:
             logging.getLogger(__name__).exception(
@@ -362,10 +394,13 @@ async def upload_document(
         activated = await _activate_record_if_indexing(db, document_id, UUID(principal.tenant_id))
     except Exception as exc:
         await db.rollback()
-        await mark_document_failed(db, record, principal, type(exc).__name__)
+        await fail_or_requeue_ingestion_job(db, job, record, exc, terminal=True)
         try:
             await runtime.run_provider_operation(
-                runtime.pinecone_provider.delete_document, principal.tenant_id, str(document_id)
+                runtime.pinecone_provider.delete_document,
+                principal.tenant_id,
+                str(document_id),
+                staged_record_ids,
             )
         except Exception:
             logging.getLogger(__name__).exception(
@@ -375,12 +410,12 @@ async def upload_document(
             )
         raise HTTPException(503, "Document metadata could not be finalized") from exc
     if not activated:
-        job.status = IngestionJobStatus.failed.value
-        job.last_error = "IngestionJobNotClaimed"
-        job.locked_until = None
         try:
             await runtime.run_provider_operation(
-                runtime.pinecone_provider.delete_document, principal.tenant_id, str(document_id)
+                runtime.pinecone_provider.delete_document,
+                principal.tenant_id,
+                str(document_id),
+                staged_record_ids,
             )
         except Exception:
             logging.getLogger(__name__).exception(
@@ -388,14 +423,37 @@ async def upload_document(
                 principal.tenant_id,
                 document_id,
             )
-        await db.commit()
+        await fail_or_requeue_ingestion_job(
+            db,
+            job,
+            record,
+            RuntimeError("Document was revoked during activation"),
+            terminal=True,
+        )
         raise HTTPException(409, "Document was revoked during activation")
+    previous_version = int(job.previous_document["version"]) if job.previous_document else None
     job.status = IngestionJobStatus.succeeded.value
     job.content = None
     job.locked_until = None
     job.last_error = None
     job.updated_at = datetime.now(UTC)
     await db.commit()
+    if previous_version is not None:
+        try:
+            await runtime.run_provider_operation(
+                runtime.pinecone_provider.delete_document,
+                principal.tenant_id,
+                str(document_id),
+                version=previous_version,
+            )
+        except Exception as exc:  # noqa: BLE001 - old vectors are no longer queryable
+            logging.getLogger(__name__).warning(
+                "document_previous_version_cleanup_failed document_id=%s type=%s",
+                document_id,
+                type(exc).__name__,
+            )
+        job.previous_document = None
+        await db.commit()
     audit(
         "document_ingested",
         user_id=principal.user_id,

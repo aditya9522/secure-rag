@@ -92,6 +92,16 @@ class StreamingFakeProvider(FakeProvider):
         return self.answer
 
 
+class LineStreamingFakeProvider(FakeProvider):
+    def generate_stream(self, system_prompt, user_prompt, on_delta):
+        first = "Deployment process [doc:d1 chunk:d1:0].\n"
+        second = "Deployment process [doc:d1 chunk:d1:0]."
+        on_delta(first)
+        on_delta(second)
+        self.prompt = user_prompt
+        return first + second
+
+
 class UngroundedFakeProvider(FakeProvider):
     def verify_grounding(self, answer, evidence):
         return False
@@ -237,6 +247,36 @@ def test_database_lifecycle_filters_stale_provider_matches():
     assert provider.prompt is None
 
 
+def test_database_lifecycle_filters_an_old_active_vector_version():
+    provider = FakeProvider()
+    principal = Principal(user_id="u1", tenant_id="tenant-a", groups=["engineering"])
+    match = _match(
+        {
+            "tenant_id": "tenant-a",
+            "active": True,
+            "allowed_groups": ["engineering"],
+            "classification_rank": 1,
+            "document_id": "doc-1",
+            "document_title": "current",
+            "chunk_id": "doc-1:v1:0",
+            "text": "stale content",
+            "version": 1,
+        }
+    )
+
+    result = answer_query(
+        principal,
+        "What is the process?",
+        provider,
+        FakePinecone([match]),
+        active_document_ids={"doc-1": 2},
+    )
+
+    assert result.refused is True
+    assert "inactive_document_version_dropped" in result.policy_flags
+    assert provider.prompt is None
+
+
 def test_streaming_deltas_are_emitted_only_after_output_sanitization():
     provider = StreamingFakeProvider(answer="Deployment process [doc:d1 chunk:d1:0]")
     principal = Principal(user_id="u1", tenant_id="tenant-a", groups=["engineering"])
@@ -265,6 +305,38 @@ def test_streaming_deltas_are_emitted_only_after_output_sanitization():
     assert result.grounded is True
     assert deltas == [result.answer]
     assert "test@example.com" not in deltas[0]
+
+
+def test_grounded_stream_releases_verified_complete_lines_progressively():
+    provider = LineStreamingFakeProvider()
+    principal = Principal(user_id="u1", tenant_id="tenant-a", groups=["engineering"])
+    match = _match(
+        {
+            "tenant_id": "tenant-a",
+            "active": True,
+            "allowed_groups": ["engineering"],
+            "classification_rank": 1,
+            "document_id": "d1",
+            "document_title": "runbook",
+            "chunk_id": "d1:0",
+            "text": "deployment process",
+        }
+    )
+    deltas = []
+
+    result = answer_query(
+        principal,
+        "What is the deployment process?",
+        provider,
+        FakePinecone([match]),
+        on_delta=deltas.append,
+    )
+
+    assert result.grounded is True
+    assert deltas == [
+        "Deployment process [doc:d1 chunk:d1:0].\n",
+        "Deployment process [doc:d1 chunk:d1:0].",
+    ]
 
 
 def test_invalid_streamed_output_emits_no_delta():

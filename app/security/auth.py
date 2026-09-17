@@ -51,13 +51,6 @@ def decode_principal(token: str) -> Principal:
 
 
 def get_principal(credentials: HTTPAuthorizationCredentials | None) -> Principal:
-    if not settings.require_auth:
-        return Principal(
-            user_id="dev-user",
-            tenant_id="dev-tenant",
-            groups=["all"],
-            classification_max=Classification.restricted,
-        )
     if not credentials:
         audit("authentication_failed", reason="missing_bearer")
         raise HTTPException(status_code=401, detail="Bearer token required")

@@ -54,12 +54,28 @@ def attach_refresh_cookie(response: JSONResponse, refresh_token: str) -> JSONRes
         max_age=settings.refresh_token_days * 86400,
         httponly=True,
         secure=settings.environment != "development",
-        samesite="lax",
+        # Netlify and the API commonly use different sites in production.
+        # Lax cookies are not sent with cross-site fetch requests, which
+        # would make the short-lived access token impossible to refresh.
+        samesite="none" if settings.environment == "production" else "lax",
         # Organization switching also rotates the refresh session, so the
         # cookie must be sent to that /v1 endpoint as well as /auth.
         path="/",
     )
     return response
+
+
+def validate_cookie_request_origin(request: Request) -> None:
+    """Require a browser request origin trusted by this deployment."""
+    origin = request.headers.get("origin")
+    if not origin:
+        raise HTTPException(403, "Request origin is required")
+    configured_origins = {
+        value.strip() for value in settings.cors_allowed_origins.split(",") if value.strip()
+    }
+    same_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin not in configured_origins and origin != same_origin:
+        raise HTTPException(403, "Request origin is not allowed")
 
 
 @router.post("/auth/login", response_model=AuthResponse)
@@ -121,6 +137,7 @@ async def accept_invite(
 @limiter.limit("20/minute")
 async def refresh(request: Request, db: AsyncSession = Depends(get_db)):  # noqa: B008
     auth_ready()
+    validate_cookie_request_origin(request)
     raw_token = request.cookies.get("refresh_token")
     if not raw_token:
         raise HTTPException(401, "Refresh session required")
@@ -167,6 +184,7 @@ async def refresh(request: Request, db: AsyncSession = Depends(get_db)):  # noqa
 
 @router.post("/auth/logout", status_code=204)
 async def logout(request: Request, db: AsyncSession = Depends(get_db)):  # noqa: B008
+    validate_cookie_request_origin(request)
     raw_token = request.cookies.get("refresh_token")
     if raw_token:
         result = await db.execute(

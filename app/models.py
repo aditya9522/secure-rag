@@ -211,6 +211,8 @@ class DocumentSummary(BaseModel):
     chunks_indexed: int
     created_at: datetime
     updated_at: datetime
+    last_error: str | None = None
+    can_retry: bool = False
 
 
 class ConversationSummary(BaseModel):

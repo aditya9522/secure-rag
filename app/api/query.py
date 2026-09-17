@@ -25,14 +25,14 @@ from app.services.chat_service import persist_query
 router = APIRouter(prefix="/v1/query", tags=["query"])
 
 
-async def active_document_ids(db: AsyncSession, principal: Principal) -> set[str]:
-    rows = await db.scalars(
-        select(DocumentRecord.id).where(
+async def active_document_ids(db: AsyncSession, principal: Principal) -> dict[str, int]:
+    rows = await db.execute(
+        select(DocumentRecord.id, DocumentRecord.version).where(
             DocumentRecord.organization_id == UUID(principal.tenant_id),
             DocumentRecord.status == DocumentStatus.active.value,
         )
     )
-    return {str(document_id) for document_id in rows}
+    return {str(document_id): int(version) for document_id, version in rows}
 
 
 async def run_answer(

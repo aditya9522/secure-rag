@@ -42,7 +42,11 @@ class PineconeProvider:
             )
 
     def delete_document(
-        self, tenant_id: str, document_id: str, record_ids: list[str] | None = None
+        self,
+        tenant_id: str,
+        document_id: str,
+        record_ids: list[str] | None = None,
+        version: int | None = None,
     ) -> None:
         """Remove staged or revoked vectors without relying on metadata visibility."""
         if record_ids is not None:
@@ -50,10 +54,10 @@ class PineconeProvider:
                 return
             self.index.delete(ids=record_ids, namespace=tenant_id)
             return
-        self.index.delete(
-            namespace=tenant_id,
-            filter={"document_id": {"$eq": document_id}},
-        )
+        document_filter: dict = {"document_id": {"$eq": document_id}}
+        if version is not None:
+            document_filter = {"$and": [document_filter, {"version": {"$eq": version}}]}
+        self.index.delete(namespace=tenant_id, filter=document_filter)
 
     def query(self, tenant_id: str, vector: list[float], top_k: int, filter_: dict):
         return self.index.query(
@@ -66,7 +70,7 @@ class PineconeProvider:
         )
 
     def activate_document(self, tenant_id: str, document_id: str, record_ids: list[str]) -> None:
-        """Make exactly the staged vectors for one document retrievable."""
+        """Make only the staged version retrievable."""
         expected_prefix = f"{document_id}:"
         if not record_ids or any(
             not record_id.startswith(expected_prefix) for record_id in record_ids

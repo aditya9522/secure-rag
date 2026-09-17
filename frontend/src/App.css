@@ -1663,6 +1663,19 @@
   color: var(--text-faint);
   font-size: 9px;
 }
+.member-cell .table-error {
+  color: var(--red);
+}
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.load-more-button {
+  display: block;
+  margin: 14px auto 0;
+}
 .table-avatar {
   width: 29px;
   height: 29px;
@@ -2516,45 +2529,10 @@
   font-size: 12px;
   line-height: 1.55;
 }
-.sso-button {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: center;
-  padding: 0 12px;
-  gap: 8px;
-  height: 40px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--purple);
-  color: white;
-  font-size: 11px;
-  font-weight: 700;
-}
-.sso-button svg:last-child {
-  margin-left: auto;
-}
-.sso-button:hover {
-  background: var(--purple-dark);
-}
-.auth-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 21px 0 16px;
-  color: var(--text-faint);
-  font-size: 10px;
-}
-.auth-divider::before,
-.auth-divider::after {
-  height: 1px;
-  flex: 1;
-  content: "";
-  background: var(--border);
-}
 .auth-security {
   display: flex;
   align-items: flex-start;
+  margin-top: 10px;
   gap: 8px;
   padding: 10px;
   border-radius: 7px;

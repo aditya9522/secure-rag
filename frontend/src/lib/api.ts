@@ -50,6 +50,8 @@ export interface DocumentSummary {
   chunks_indexed: number;
   created_at: string;
   updated_at: string;
+  last_error?: string | null;
+  can_retry?: boolean;
 }
 
 export interface ConversationSummary {
@@ -255,20 +257,21 @@ export async function switchOrganization(organizationId: string) {
   setAccessToken(result.access_token);
   return result;
 }
-export function listDocuments() { return requestJson<DocumentSummary[]>("/v1/documents"); }
+export function listDocuments(limit = 100, offset = 0) { return requestJson<DocumentSummary[]>(`/v1/documents?limit=${limit}&offset=${offset}`); }
 export function revokeDocument(documentId: string) { return requestJson<void>(`/v1/documents/${documentId}`, { method: "DELETE" }); }
 export function createConversation() { return requestJson<ConversationSummary>("/v1/conversations", { method: "POST" }); }
-export function listConversations() { return requestJson<ConversationSummary[]>("/v1/conversations"); }
-export function listMessages(conversationId: string) { return requestJson<ChatMessageResponse[]>(`/v1/conversations/${conversationId}/messages`); }
-export function listMembers() { return requestJson<MemberSummary[]>("/v1/organizations/members"); }
+export function listConversations(limit = 100, offset = 0) { return requestJson<ConversationSummary[]>(`/v1/conversations?limit=${limit}&offset=${offset}`); }
+export function listMessages(conversationId: string, limit = 100, offset = 0) { return requestJson<ChatMessageResponse[]>(`/v1/conversations/${conversationId}/messages?limit=${limit}&offset=${offset}`); }
+export function listMembers(limit = 100, offset = 0) { return requestJson<MemberSummary[]>(`/v1/organizations/members?limit=${limit}&offset=${offset}`); }
 export function updateMember(memberId: string, payload: { role: MemberRole; groups: string[]; classification_max: Classification }) { return requestJson<{ status: string }>(`/v1/organizations/members/${memberId}`, { method: "PATCH", body: JSON.stringify(payload) }); }
 export function inviteMember(payload: { email: string; full_name: string; role: "admin" | "member"; groups: string[]; classification_max: Classification }) { return requestJson<{ invitation_id: string; invitation_token: string; expires_at: string }>("/v1/organizations/invitations", { method: "POST", body: JSON.stringify(payload) }); }
-export function uploadDocument(file: File, options: { classification: string; allowed_groups: string[]; source_uri?: string }) {
+export function uploadDocument(file: File, options: { classification: string; allowed_groups: string[]; source_uri?: string; retryDocumentId?: string }) {
   const body = new FormData();
   body.append("file", file);
   body.append("classification", options.classification);
   body.append("allowed_groups", options.allowed_groups.join(","));
   if (options.source_uri) body.append("source_uri", options.source_uri);
+  if (options.retryDocumentId) body.append("retry_document_id", options.retryDocumentId);
   return requestJson<{ document_id: string; chunks_indexed: number }>("/v1/documents", { method: "POST", body });
 }
 export function getAdminMetrics() { return requestJson<AdminMetrics>("/v1/admin/metrics"); }

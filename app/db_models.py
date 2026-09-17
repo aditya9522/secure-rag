@@ -209,6 +209,7 @@ class IngestionJob(Base):
     classification: Mapped[str] = mapped_column(String(20))
     allowed_groups: Mapped[list[str]] = mapped_column(JSONB, default=list)
     source_uri: Mapped[str | None] = mapped_column(String(2048))
+    previous_document: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=IngestionJobStatus.queued.value)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

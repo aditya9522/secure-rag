@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import attach_refresh_cookie, build_auth_response_for_session
+from app.api.auth import (
+    attach_refresh_cookie,
+    build_auth_response_for_session,
+    validate_cookie_request_origin,
+)
 from app.api.dependencies import (
     authorized_principal_dep,
     org_admin_dep,
@@ -44,6 +48,17 @@ from app.services.auth_service import (
 router = APIRouter(prefix="/v1/organizations", tags=["organizations"])
 
 
+def _assert_can_grant_role(
+    acting_role: str, requested_role: str, current_role: str | None = None
+) -> None:
+    if (
+        acting_role != OrganizationRole.owner.value
+        and requested_role == OrganizationRole.admin.value
+        and current_role != OrganizationRole.admin.value
+    ):
+        raise HTTPException(403, "Only organization owners can grant administrator access")
+
+
 @router.post("/switch", response_model=AuthResponse)
 async def switch_organization(
     request: Request,
@@ -51,6 +66,7 @@ async def switch_organization(
     principal: Principal = Depends(authorized_principal_dep),  # noqa: B008
     db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
+    validate_cookie_request_origin(request)
     user_id = principal_uuid(principal)
     user = await db.get(User, user_id)
     if not user or not user.is_active:
@@ -66,8 +82,8 @@ async def switch_organization(
             tenant_id=str(organization.id),
             groups=membership.groups or [],
             classification_max=membership.classification_max,
-            can_manage_access=user.is_system_admin
-            or membership.role in {OrganizationRole.owner.value, OrganizationRole.admin.value},
+            can_manage_access=membership.role
+            in {OrganizationRole.owner.value, OrganizationRole.admin.value},
         ),
         system_admin=user.is_system_admin,
     )
@@ -109,8 +125,9 @@ async def invite_member(
     payload: InviteMemberRequest,
     auth: tuple[Principal, AsyncSession, Membership] = Depends(org_admin_dep),
 ):
-    principal, db, _ = auth
+    principal, db, acting_membership = auth
     organization_id = UUID(principal.tenant_id)
+    _assert_can_grant_role(acting_membership.role, payload.role)
     try:
         invitation, raw_token = await create_invitation(
             db,
@@ -187,11 +204,7 @@ async def update_member(
         raise HTTPException(404, "Member not found")
     if member_id == principal_uuid(principal) and payload.role == MembershipStatus.suspended.value:
         raise HTTPException(400, "You cannot suspend your own account")
-    if (
-        acting_membership.role != OrganizationRole.owner.value
-        and payload.role == OrganizationRole.admin.value
-    ):
-        raise HTTPException(403, "Only organization owners can grant administrator access")
+    _assert_can_grant_role(acting_membership.role, payload.role, membership.role)
     membership.role = (
         payload.role if payload.role != MembershipStatus.suspended.value else membership.role
     )

@@ -24,6 +24,34 @@ class IngestionJobNotClaimed(Exception):
     """Another worker owns the job or the job is no longer runnable."""
 
 
+def document_snapshot(record: DocumentRecord) -> dict:
+    """Return the last published document state in JSON-safe form."""
+    return {
+        "owner_user_id": str(record.owner_user_id),
+        "title": record.title,
+        "classification": record.classification,
+        "allowed_groups": list(record.allowed_groups or []),
+        "source_uri": record.source_uri,
+        "source_hash": record.source_hash,
+        "version": record.version,
+        "status": record.status,
+        "chunks_indexed": record.chunks_indexed,
+    }
+
+
+def restore_document_snapshot(record: DocumentRecord, snapshot: dict) -> None:
+    """Restore a previously active document after replacement failure."""
+    record.owner_user_id = UUID(snapshot["owner_user_id"])
+    record.title = snapshot["title"]
+    record.classification = snapshot["classification"]
+    record.allowed_groups = list(snapshot["allowed_groups"])
+    record.source_uri = snapshot["source_uri"]
+    record.source_hash = snapshot["source_hash"]
+    record.version = int(snapshot["version"])
+    record.status = snapshot["status"]
+    record.chunks_indexed = int(snapshot["chunks_indexed"])
+
+
 async def mark_document_failed(
     db: AsyncSession, record: DocumentRecord, principal: Principal, error_type: str
 ) -> None:
@@ -124,14 +152,24 @@ async def reconcile_expired_ingestion_jobs(db: AsyncSession) -> int:
         )
     )
     if exhausted_document_ids:
-        await db.execute(
-            update(DocumentRecord)
-            .where(
-                DocumentRecord.id.in_(exhausted_document_ids),
-                DocumentRecord.status == DocumentStatus.indexing.value,
+        exhausted_jobs = (
+            await db.scalars(
+                select(IngestionJob).where(
+                    IngestionJob.document_id.in_(exhausted_document_ids),
+                    IngestionJob.status == IngestionJobStatus.failed.value,
+                )
             )
-            .values(status=DocumentStatus.failed.value, updated_at=now)
-        )
+        ).all()
+        for job in exhausted_jobs:
+            record = await db.get(DocumentRecord, job.document_id)
+            if record is None or record.status != DocumentStatus.indexing.value:
+                continue
+            if job.previous_document:
+                restore_document_snapshot(record, job.previous_document)
+                job.previous_document = None
+            else:
+                record.status = DocumentStatus.failed.value
+            record.updated_at = now
     if result.rowcount:
         await db.commit()
     return result.rowcount or 0
@@ -229,7 +267,11 @@ async def fail_or_requeue_ingestion_job(
     exhausted = job.attempts >= settings.ingestion_max_attempts
     if terminal or exhausted:
         if record.status != DocumentStatus.revoked.value:
-            record.status = DocumentStatus.failed.value
+            if job.previous_document:
+                restore_document_snapshot(record, job.previous_document)
+                job.previous_document = None
+            else:
+                record.status = DocumentStatus.failed.value
         job.status = IngestionJobStatus.failed.value
         job.content = None
         job.locked_until = None
@@ -301,7 +343,26 @@ async def process_ingestion_job(
             job.updated_at = datetime.now(UTC)
             await db.commit()
         raise error
+
+    async def cleanup_staged(record_ids: list[str]) -> None:
+        if not record_ids:
+            return
+        try:
+            await run_provider_operation(
+                pinecone.delete_document,
+                str(job.organization_id),
+                str(job.document_id),
+                record_ids,
+            )
+        except Exception as cleanup_exc:  # noqa: BLE001 - database state must still settle
+            logging.getLogger(__name__).warning(
+                "ingestion_staged_cleanup_failed job_id=%s type=%s",
+                job.id,
+                type(cleanup_exc).__name__,
+            )
+
     try:
+        staged_record_ids: list[str] = []
         result = await run_provider_operation(
             ingest_document,
             principal=principal,
@@ -316,6 +377,7 @@ async def process_ingestion_job(
             version=record.version,
             activate=False,
         )
+        staged_record_ids = result["_record_ids"]
         await run_provider_operation(
             pinecone.activate_document,
             str(job.organization_id),
@@ -324,25 +386,44 @@ async def process_ingestion_job(
         )
         activated = await activate_record_if_indexing(db, job.document_id, job.organization_id)
         if not activated:
-            await run_provider_operation(
-                pinecone.delete_document, str(job.organization_id), str(job.document_id)
-            )
+            await cleanup_staged(staged_record_ids)
             await fail_or_requeue_ingestion_job(
                 db, job, record, ValueError("Document was revoked during activation"), terminal=True
             )
             raise IngestionJobNotClaimed
+        previous_version = int(job.previous_document["version"]) if job.previous_document else None
         await _finish_ingestion_job(db, job, record, result)
+        if previous_version is not None:
+            try:
+                await run_provider_operation(
+                    pinecone.delete_document,
+                    str(job.organization_id),
+                    str(job.document_id),
+                    version=previous_version,
+                )
+            except Exception as cleanup_exc:  # noqa: BLE001 - DB publication is authoritative
+                logging.getLogger(__name__).warning(
+                    "ingestion_previous_version_cleanup_failed job_id=%s type=%s",
+                    job.id,
+                    type(cleanup_exc).__name__,
+                )
+            job.previous_document = None
+            await db.commit()
         return result
     except (PermissionError, ValueError) as exc:
+        await cleanup_staged(staged_record_ids)
         await fail_or_requeue_ingestion_job(db, job, record, exc, terminal=True)
         raise
     except IngestionJobNotClaimed:
         raise
     except Exception as exc:
-        if job.attempts >= settings.ingestion_max_attempts:
+        if "staged_record_ids" in locals() and staged_record_ids:
             try:
                 await run_provider_operation(
-                    pinecone.delete_document, str(job.organization_id), str(job.document_id)
+                    pinecone.delete_document,
+                    str(job.organization_id),
+                    str(job.document_id),
+                    staged_record_ids,
                 )
             except Exception as cleanup_exc:  # noqa: BLE001 - terminal state remains fail-closed
                 logging.getLogger(__name__).error(
