@@ -12,6 +12,7 @@ from app.api.documents import (
     _validate_idempotency_key,
     revoke_document,
 )
+from app.db_models import DocumentRecord
 from app.ingest import ingest_document, validate_source_uri
 from app.models import Classification, Principal
 from app.services.document_service import document_snapshot, fail_or_requeue_ingestion_job
@@ -77,6 +78,32 @@ class RevokedDocumentSession:
 
     async def scalar(self, _statement):
         return self.document
+
+
+def test_new_document_record_accepts_upload_persistence_fields():
+    document_id = uuid4()
+    organization_id = uuid4()
+    owner_user_id = uuid4()
+
+    record = DocumentRecord(
+        id=document_id,
+        organization_id=organization_id,
+        owner_user_id=owner_user_id,
+        title="notes.txt",
+        classification=Classification.internal.value,
+        allowed_groups=["org:test"],
+        source_uri=None,
+        source_hash="a" * 64,
+        idempotency_key=None,
+        version=1,
+        status="indexing",
+        chunks_indexed=0,
+    )
+
+    assert record.id == document_id
+    assert record.organization_id == organization_id
+    assert record.owner_user_id == owner_user_id
+    assert record.status == "indexing"
 
 
 def test_document_activation_is_conditional_on_indexing_state():

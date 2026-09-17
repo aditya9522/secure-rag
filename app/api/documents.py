@@ -260,7 +260,6 @@ async def upload_document(
             classification=classification.value,
             allowed_groups=stored_groups,
             source_uri=source_uri,
-            previous_document=None,
             source_hash=hashlib.sha256(content).hexdigest(),
             idempotency_key=idempotency_key,
             version=1,

@@ -25,17 +25,6 @@ app = FastAPI(
 )
 app.state.limiter = runtime.limiter
 
-if settings.cors_allowed_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()
-        ],
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
-    )
-
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -82,3 +71,17 @@ app.include_router(documents.router)
 app.include_router(conversations.router)
 app.include_router(query.router)
 app.include_router(admin.router)
+
+# Wrap the complete application so CORS headers are also present on unhandled
+# error responses. This keeps browser diagnostics actionable while the server
+# logs retain the actual exception details.
+if settings.cors_allowed_origins:
+    app = CORSMiddleware(
+        app,
+        allow_origins=[
+            origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()
+        ],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
+    )
