@@ -22,6 +22,7 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
   const [error, setError] = useState("");
   const [contextOpen, setContextOpen] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [conversationMenuOpen, setConversationMenuOpen] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const messageScrollRef = useRef<HTMLDivElement>(null);
   const menuSurfaceRef = useRef<HTMLDivElement>(null);
@@ -47,12 +48,18 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
     }
   }
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !conversationMenuOpen) return;
     function dismissMenu(event: PointerEvent) {
-      if (menuSurfaceRef.current && !menuSurfaceRef.current.contains(event.target as Node)) setMenuOpen(false);
+      if (menuSurfaceRef.current?.contains(event.target as Node)) return;
+      if (event.target instanceof Element && event.target.closest("[data-conversation-menu]")) return;
+      setMenuOpen(false);
+      setConversationMenuOpen(null);
     }
     function dismissOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        setConversationMenuOpen(null);
+      }
     }
     document.addEventListener("pointerdown", dismissMenu);
     document.addEventListener("keydown", dismissOnEscape);
@@ -60,7 +67,7 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
       document.removeEventListener("pointerdown", dismissMenu);
       document.removeEventListener("keydown", dismissOnEscape);
     };
-  }, [menuOpen]);
+  }, [conversationMenuOpen, menuOpen]);
   useEffect(() => { if (!import.meta.env.VITE_API_BASE_URL) return; void loadConversations(); }, []);
   useEffect(() => {
     if (!conversationId) return;
@@ -76,8 +83,8 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 60_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => () => { streamAbortRef.current?.abort(); }, []);
   const cancelStream = () => { streamAbortRef.current?.abort(); streamAbortRef.current = null; };
-  const newConversation = () => { cancelStream(); setConversationId(undefined); setActiveConversation(-1); setMessages([greeting("New conversation ready. What would you like to explore?")]); setError(""); setMenuOpen(false); };
-  const selectConversation = (id: string, index: number) => { cancelStream(); setActiveConversation(index); setConversationId(id); setError(""); };
+  const newConversation = () => { cancelStream(); setConversationId(undefined); setActiveConversation(-1); setMessages([greeting("New conversation ready. What would you like to explore?")]); setError(""); setMenuOpen(false); setConversationMenuOpen(null); };
+  const selectConversation = (id: string, index: number) => { cancelStream(); setActiveConversation(index); setConversationId(id); setError(""); setConversationMenuOpen(null); };
   async function submitMessage(event?: FormEvent | ReactKeyboardEvent) {
     event?.preventDefault();
     const query = input.trim();
@@ -85,11 +92,19 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
     const assistantId = crypto.randomUUID();
     const controller = new AbortController();
     streamAbortRef.current = controller;
-    setInput(""); setError(""); setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: query }, { id: assistantId, role: "assistant", content: "", mode: "conversational" }]); setLoading(true);
+    setInput(""); setError(""); setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: query }, { id: assistantId, role: "assistant", content: "", mode: "conversational", streaming: true }]); setLoading(true);
     try {
       const response: QueryResponse | null = await streamQueryWorkspace(query, conversationId, (content) => {
         setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: message.content + content, streaming: true } : message));
-      }, controller.signal);
+      }, controller.signal, true, (finalResponse) => {
+        setMessages((current) => current.map((message) => message.id === assistantId ? {
+          ...message,
+          content: finalResponse.answer,
+          mode: finalResponse.mode,
+          citations: finalResponse.citations,
+          streaming: false,
+        } : message));
+      });
       if (response?.conversation_id) {
         setConversationId(response.conversation_id);
         void listConversations().then((items) => {
@@ -98,9 +113,9 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
           if (activeIndex >= 0) setActiveConversation(activeIndex);
         }).catch(() => undefined);
       }
-      const isGreeting = /^(hi+|hello+|hey+|thanks?|thank you|bye+|what can you help(?: me)?(?: with)?|how can you help(?: me)?|what are you doing)\b/i.test(query);
-      const fallback = isGreeting ? { answer: "Hello! I’m ready to help you find answers in your authorized workspace data.", mode: "conversational" as const } : { answer: "Connect the API and sign in to retrieve answers from your organization knowledge base.", mode: "refused" as const };
-      setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: response?.answer ?? fallback.answer, mode: response?.mode ?? fallback.mode, citations: response?.citations ?? [], streaming: false } : message));
+      if (!response) {
+        setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: "The assistant did not return a response.", mode: "refused", citations: [], streaming: false } : message));
+      }
     } catch (requestError) {
       if (controller.signal.aborted) {
         setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, streaming: false } : message));
@@ -110,8 +125,8 @@ export function ChatPage({ organization, identity, onNavigate }: { organization:
       setError(requestError instanceof Error ? requestError.message : "The assistant is temporarily unavailable.");
     } finally { if (streamAbortRef.current === controller) streamAbortRef.current = null; setLoading(false); }
   }
-  return <div className={`chat-layout ${contextOpen ? "" : "chat-layout-context-closed"}`}><aside className="conversation-rail"><div className="conversation-head"><div><div className="eyebrow accent-eyebrow">Assistant</div><h2>Conversations</h2></div><button className="icon-button subtle" aria-label="New conversation" onClick={newConversation}><Plus size={17} /></button></div><button className="new-chat-button" onClick={newConversation}><Plus size={16} /> New conversation</button><div className="conversation-list">{conversations.map((conversation, index) => <button key={conversation.id ?? conversation.title} className={`conversation-item ${activeConversation === index ? "conversation-item-active" : ""}`} onClick={() => { if (conversation.id) selectConversation(conversation.id, index); }}><span className="conversation-icon"><MessageSquare size={15} /></span><span className="conversation-info"><strong>{conversation.title}</strong><small>{conversation.preview}</small></span><time>{conversation.time}</time></button>)}{!conversations.length && <div className="conversation-empty">No saved conversations yet.</div>}{hasMoreConversations && <button className="button button-secondary load-more-button" type="button" disabled={loadingMoreConversations} onClick={() => void loadConversations(true)}>{loadingMoreConversations ? "Loading…" : "Load more conversations"}</button>}</div><div className="rail-footer"><div className="usage-label"><span>Conversation history</span><strong>{remoteConversations.length}</strong></div><small>History is isolated to the current organization and signed-in user.</small></div></aside>
-    <section className="chat-main"><div className="chat-header"><div><div className="eyebrow accent-eyebrow">Secure chat</div><h1>{conversations[activeConversation]?.title ?? "New conversation"}</h1></div><div className="chat-header-actions"><span className="secure-badge"><ShieldCheck size={14} /> Protected</span>{!contextOpen && <button className="button button-secondary context-toggle" onClick={() => setContextOpen(true)}><ShieldCheck size={14} /> Context</button>}<div className="chat-menu-wrap" ref={menuSurfaceRef}><button className="icon-button subtle" aria-label="Conversation options" aria-expanded={menuOpen} aria-haspopup="menu" aria-controls="conversation-menu" onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={18} /></button>{menuOpen && <div className="chat-menu" id="conversation-menu" role="menu"><button role="menuitem" onClick={newConversation}><Plus size={14} /> New conversation</button><button role="menuitem" onClick={() => { onNavigate("settings"); setMenuOpen(false); }}><Settings size={14} /> Privacy & security</button></div>}</div></div></div><div className="message-scroll" ref={messageScrollRef} aria-live="polite"><div className="date-divider"><span>{activeConversationRecord ? formatRelativeDate(activeConversationRecord.updated_at, now) : "Today"}</span></div>{messages.map((message) => <MessageBubble key={message.id} message={message} avatar={avatar} />)}{error && <div className="request-error" role="alert"><AlertTriangle size={16} />{error}</div>}{!messages.length && <div className="empty-state"><MessageSquare size={20} /><strong>No messages yet</strong><span>Start a conversation with an authorized workspace question.</span></div>}</div><div className="composer-wrap"><div className="suggestion-row"><button type="button" onClick={() => setInput("What can you help me with?")}>What can you help me with?</button><button type="button" onClick={() => setInput("Summarize our latest updates")}>Summarize latest updates</button></div><form className="composer" onSubmit={submitMessage}><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) void submitMessage(event); }} placeholder="Ask a question about your workspace…" rows={1} aria-label="Ask your workspace" /><button className={loading ? "stop-button" : "send-button"} type={loading ? "button" : "submit"} onClick={loading ? cancelStream : undefined} disabled={!loading && !input.trim()} aria-label={loading ? "Stop generating" : "Send question"}>{loading ? <Square size={15} fill="currentColor" /> : <Send size={18} />}</button></form><div className="composer-note"><LockKeyhole size={12} /> Answers are limited to sources you’re authorized to access <span>·</span> <button type="button" onClick={() => onNavigate("settings")}>Privacy & security</button></div></div></section>
+  return <div className={`chat-layout ${contextOpen ? "" : "chat-layout-context-closed"}`}><aside className="conversation-rail"><div className="conversation-head"><div><div className="eyebrow accent-eyebrow">Assistant</div><h2>Conversations</h2></div><button className="icon-button subtle" aria-label="New conversation" onClick={newConversation}><Plus size={17} /></button></div><button className="new-chat-button" onClick={newConversation}><Plus size={16} /> New conversation</button><div className="conversation-list">{conversations.map((conversation, index) => <div key={conversation.id ?? conversation.title} className={`conversation-item ${activeConversation === index ? "conversation-item-active" : ""}`}><button className="conversation-select" type="button" aria-current={activeConversation === index ? "page" : undefined} onClick={() => { if (conversation.id) selectConversation(conversation.id, index); }}><span className="conversation-icon"><MessageSquare size={15} /></span><span className="conversation-info"><strong>{conversation.title}</strong><small>{conversation.preview}</small></span><time>{conversation.time}</time></button><div className="conversation-action-wrap" data-conversation-menu><button className="conversation-action icon-button subtle" type="button" aria-label={`Actions for ${conversation.title}`} aria-expanded={conversationMenuOpen === conversation.id} aria-haspopup="menu" onClick={() => { setMenuOpen(false); setConversationMenuOpen((current) => current === conversation.id ? null : conversation.id); }}><MoreHorizontal size={16} /></button>{conversationMenuOpen === conversation.id && <div className="chat-menu conversation-menu" role="menu"><button role="menuitem" onClick={() => selectConversation(conversation.id, index)}><MessageSquare size={14} /> Open conversation</button><button role="menuitem" onClick={newConversation}><Plus size={14} /> New conversation</button><button role="menuitem" onClick={() => { onNavigate("settings"); setConversationMenuOpen(null); }}><Settings size={14} /> Privacy & security</button></div>}</div></div>)}{!conversations.length && <div className="conversation-empty">No saved conversations yet.</div>}{hasMoreConversations && <button className="button button-secondary load-more-button" type="button" disabled={loadingMoreConversations} onClick={() => void loadConversations(true)}>{loadingMoreConversations ? "Loading…" : "Load more conversations"}</button>}</div><div className="rail-footer"><div className="usage-label"><span>Conversation history</span><strong>{remoteConversations.length}</strong></div><small>History is isolated to the current organization and signed-in user.</small></div></aside>
+    <section className="chat-main"><div className="chat-header"><div><div className="eyebrow accent-eyebrow">Secure chat</div><h1>{conversations[activeConversation]?.title ?? "New conversation"}</h1></div><div className="chat-header-actions"><span className="secure-badge"><ShieldCheck size={14} /> Protected</span>{!contextOpen && <button className="button button-secondary context-toggle" onClick={() => setContextOpen(true)}><ShieldCheck size={14} /> Context</button>}<div className="chat-menu-wrap" ref={menuSurfaceRef}><button className="icon-button subtle" aria-label="Conversation options" aria-expanded={menuOpen} aria-haspopup="menu" aria-controls="conversation-menu" onClick={() => { setConversationMenuOpen(null); setMenuOpen(!menuOpen); }}><MoreHorizontal size={18} /></button>{menuOpen && <div className="chat-menu" id="conversation-menu" role="menu"><button role="menuitem" onClick={newConversation}><Plus size={14} /> New conversation</button><button role="menuitem" onClick={() => { onNavigate("settings"); setMenuOpen(false); }}><Settings size={14} /> Privacy & security</button></div>}</div></div></div><div className="message-scroll" ref={messageScrollRef} aria-live="polite"><div className="date-divider"><span>{activeConversationRecord ? formatRelativeDate(activeConversationRecord.updated_at, now) : "Today"}</span></div>{messages.map((message) => <MessageBubble key={message.id} message={message} avatar={avatar} />)}{error && <div className="request-error" role="alert"><AlertTriangle size={16} />{error}</div>}{!messages.length && <div className="empty-state"><MessageSquare size={20} /><strong>No messages yet</strong><span>Start a conversation with an authorized workspace question.</span></div>}</div><div className="composer-wrap"><div className="suggestion-row"><button type="button" onClick={() => setInput("What can you help me with?")}>What can you help me with?</button><button type="button" onClick={() => setInput("Summarize our latest updates")}>Summarize latest updates</button></div><form className="composer" onSubmit={submitMessage}><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) void submitMessage(event); }} placeholder="Ask a question about your workspace…" rows={1} aria-label="Ask your workspace" /><button className={loading ? "stop-button" : "send-button"} type={loading ? "button" : "submit"} onClick={loading ? cancelStream : undefined} disabled={!loading && !input.trim()} aria-label={loading ? "Stop generating" : "Send question"}>{loading ? <Square size={15} fill="currentColor" /> : <Send size={18} />}</button></form><div className="composer-note"><LockKeyhole size={12} /> Answers are limited to sources you’re authorized to access <span>·</span> <button type="button" onClick={() => onNavigate("settings")}>Privacy & security</button></div></div></section>
     {contextOpen && <aside className="context-panel"><div className="context-title"><h3>Answer context</h3><button className="icon-button subtle" aria-label="Close context panel" onClick={() => setContextOpen(false)}><X size={16} /></button></div><div className="context-status"><div className="status-check"><ShieldCheck size={18} /></div><div><strong>Access verified</strong><span>Scoped to {organization}</span></div></div><ContextItem icon={Globe2} label="Organization" value={organization} /><ContextItem icon={Users} label="Your access" value="Current organization" /><ContextItem icon={Database} label="Sources searched" value="Authorized sources only" /><div className="context-divider" /><div className="context-tip"><Zap size={16} /><div><strong>Better answers</strong><p>Ask a specific question and I’ll cite the exact source documents used.</p></div></div><div className="source-preview"><div className="source-preview-head"><span>Sources in this answer</span></div>{citedSources.length ? citedSources.map((source) => <SourceRow key={source.document_id} title={source.document_title} type={`Cited · ${source.score.toFixed(2)} · ${source.chunk_id}`} />) : <div className="context-empty">Citations appear here when an answer is grounded in authorized sources.</div>}</div></aside>}
   </div>;
 }

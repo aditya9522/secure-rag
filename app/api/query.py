@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-from queue import Empty, Full, Queue
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -127,21 +126,15 @@ async def query_stream(
     document_ids = await active_document_ids(db, principal)
 
     async def event_stream():
-        # A provider can produce deltas faster than a client can consume them.
-        # Drop intermediate deltas under pressure; the final complete event is
-        # still emitted and contains the complete sanitized response.
-        events: Queue[tuple[str, object | None]] = Queue(maxsize=32)
         result_holder: list[QueryResponse] = []
         error_holder: list[Exception] = []
-
-        def on_delta(delta: str) -> None:
-            try:
-                events.put_nowait(("delta", delta))
-            except Full:
-                logging.getLogger(__name__).warning("rag_stream_delta_dropped")
+        generation_done = asyncio.Event()
 
         async def generate() -> None:
             try:
+                # Keep provider deltas internal until the complete answer has
+                # passed moderation, citation, and grounding validation. The
+                # validated answer is streamed below as UI-friendly chunks.
                 result_holder.append(
                     await runtime.run_provider_operation(
                         answer_query,
@@ -150,37 +143,24 @@ async def query_stream(
                         runtime.openai_provider,
                         runtime.pinecone_provider,
                         document_ids,
-                        on_delta=on_delta,
+                        on_delta=lambda _delta: None,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - convert provider failures to safe SSE
                 error_holder.append(exc)
             finally:
-                # Completion must not block forever after a client disconnects.
-                try:
-                    events.put_nowait(("done", None))
-                except Full:
-                    while True:
-                        try:
-                            events.get_nowait()
-                        except Empty:
-                            break
-                    events.put_nowait(("done", None))
+                generation_done.set()
 
         task = asyncio.create_task(generate())
         try:
             yield sse("status", {"status": "started"})
-            while True:
+            while not generation_done.is_set():
                 if await request.is_disconnected():
                     return
                 try:
-                    event, payload = await asyncio.to_thread(events.get, True, 0.5)
-                except Empty:
+                    await asyncio.wait_for(generation_done.wait(), timeout=0.5)
+                except TimeoutError:
                     continue
-                if event == "delta":
-                    yield sse("delta", {"content": payload})
-                    continue
-                break
             await task
 
             if error_holder:
@@ -211,6 +191,11 @@ async def query_stream(
                 return
 
             response = result.model_copy(update={"conversation_id": conversation_id})
+            for start in range(0, len(response.answer), 320):
+                if await request.is_disconnected():
+                    return
+                yield sse("delta", {"content": response.answer[start : start + 320]})
+                await asyncio.sleep(0)
             yield sse("complete", {"response": response.model_dump(mode="json")})
         finally:
             if not task.done():

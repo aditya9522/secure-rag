@@ -91,6 +91,29 @@ export interface AdminMetrics {
   audit_events_today: number;
 }
 
+export type FeedbackCategory = "bug" | "feature_request" | "answer_quality" | "access" | "general";
+export type FeedbackStatus = "new" | "in_review" | "resolved" | "dismissed";
+export type FeedbackPriority = "low" | "normal" | "high";
+
+export interface FeedbackItem {
+  id: string;
+  organization_id: string;
+  user_id: string | null;
+  reporter_name: string;
+  reporter_email: string;
+  category: FeedbackCategory;
+  subject: string;
+  message: string;
+  rating: number | null;
+  source_page: string | null;
+  status: FeedbackStatus;
+  priority: FeedbackPriority;
+  created_at: string;
+  updated_at: string;
+  organization_name?: string;
+  admin_note?: string | null;
+}
+
 export interface OrganizationCreationResponse {
   organization: OrganizationSummary;
   owner: UserSummary;
@@ -193,6 +216,7 @@ export async function streamQueryWorkspace(
   onDelta: (content: string) => void,
   signal?: AbortSignal,
   retry = true,
+  onComplete?: (response: QueryResponse) => void,
 ): Promise<QueryResponse | null> {
   if (!apiBaseUrl) return null;
   const headers = new Headers({ "Content-Type": "application/json", Accept: "text/event-stream" });
@@ -207,7 +231,7 @@ export async function streamQueryWorkspace(
   if (response.status === 401 && retry && accessToken) {
     try {
       await refreshSession();
-      return streamQueryWorkspace(query, conversationId, onDelta, signal, false);
+      return streamQueryWorkspace(query, conversationId, onDelta, signal, false, onComplete);
     } catch {
       accessToken = null;
       sessionExpiredHandler?.();
@@ -232,7 +256,10 @@ export async function streamQueryWorkspace(
     if (!data) return;
     const payload = JSON.parse(data) as { content?: string; response?: QueryResponse; detail?: string };
     if (event === "delta" && payload.content) onDelta(payload.content);
-    if (event === "complete" && payload.response) completed = payload.response;
+    if (event === "complete" && payload.response) {
+      completed = payload.response;
+      onComplete?.(payload.response);
+    }
     if (event === "error") throw new Error(payload.detail ?? "The assistant is temporarily unavailable.");
   };
   while (true) {
@@ -281,3 +308,18 @@ export function createOrganization(payload: { name: string; owner_email: string;
 export function listAudit(limit = 100) { return requestJson<Record<string, unknown>[]>(`/v1/admin/audit?limit=${limit}`); }
 export function getReadiness() { return requestJson<ReadinessResponse>("/readyz"); }
 export function listNotifications(limit = 20) { return requestJson<NotificationResponse[]>(`/v1/notifications?limit=${limit}`); }
+export function submitFeedback(payload: { category: FeedbackCategory; subject: string; message: string; rating?: number; source_page?: string }) {
+  return requestJson<FeedbackItem>("/v1/feedback", { method: "POST", body: JSON.stringify(payload) });
+}
+export function listMyFeedback(limit = 50, offset = 0) { return requestJson<FeedbackItem[]>(`/v1/feedback/mine?limit=${limit}&offset=${offset}`); }
+export function listAdminFeedback(filters: { status?: FeedbackStatus; category?: FeedbackCategory; limit?: number; offset?: number } = {}) {
+  const query = new URLSearchParams();
+  if (filters.status) query.set("status", filters.status);
+  if (filters.category) query.set("category", filters.category);
+  query.set("limit", String(filters.limit ?? 200));
+  query.set("offset", String(filters.offset ?? 0));
+  return requestJson<FeedbackItem[]>(`/v1/admin/feedback?${query.toString()}`);
+}
+export function updateAdminFeedback(feedbackId: string, payload: { status: FeedbackStatus; priority: FeedbackPriority; admin_note?: string }) {
+  return requestJson<FeedbackItem>(`/v1/admin/feedback/${feedbackId}`, { method: "PATCH", body: JSON.stringify(payload) });
+}

@@ -8,7 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 
-from app.api import admin, auth, conversations, documents, health, organizations, profile, query
+from app.api import (
+    admin,
+    auth,
+    conversations,
+    documents,
+    feedback,
+    health,
+    organizations,
+    profile,
+    query,
+)
 from app.audit import request_id_context, set_request_id
 from app.config import settings
 from app.core import runtime
@@ -71,6 +81,7 @@ app.include_router(documents.router)
 app.include_router(conversations.router)
 app.include_router(query.router)
 app.include_router(admin.router)
+app.include_router(feedback.router)
 
 # Wrap the complete application so CORS headers are also present on unhandled
 # error responses. This keeps browser diagnostics actionable while the server

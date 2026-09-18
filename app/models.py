@@ -276,3 +276,77 @@ class IngestResponse(BaseModel):
     classification: Classification
     source_uri: str | None = None
     provenance: dict[str, Any]
+
+
+FeedbackCategory = Literal["bug", "feature_request", "answer_quality", "access", "general"]
+FeedbackStatus = Literal["new", "in_review", "resolved", "dismissed"]
+FeedbackPriority = Literal["low", "normal", "high"]
+
+
+def _normalize_feedback_text(value: str, *, minimum: int, field_name: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if len(normalized) < minimum:
+        raise ValueError(f"{field_name} must contain at least {minimum} characters")
+    return normalized
+
+
+class CreateFeedbackRequest(BaseModel):
+    category: FeedbackCategory
+    subject: str = Field(min_length=4, max_length=120)
+    message: str = Field(min_length=10, max_length=4000)
+    rating: int | None = Field(default=None, ge=1, le=5)
+    source_page: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @field_validator("subject")
+    @classmethod
+    def normalize_subject(cls, value: str) -> str:
+        return _normalize_feedback_text(value, minimum=4, field_name="Subject")
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 10:
+            raise ValueError("Message must contain at least 10 characters")
+        return normalized
+
+    @field_validator("source_page")
+    @classmethod
+    def normalize_source_page(cls, value: str | None) -> str | None:
+        return None if value is None else " ".join(value.strip().split())
+
+
+class UpdateFeedbackRequest(BaseModel):
+    status: FeedbackStatus
+    priority: FeedbackPriority
+    admin_note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("admin_note")
+    @classmethod
+    def normalize_admin_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class FeedbackResponse(BaseModel):
+    id: UUID
+    organization_id: UUID
+    user_id: UUID | None
+    reporter_name: str
+    reporter_email: str
+    category: FeedbackCategory
+    subject: str
+    message: str
+    rating: int | None
+    source_page: str | None
+    status: FeedbackStatus
+    priority: FeedbackPriority
+    created_at: datetime
+    updated_at: datetime
+
+
+class FeedbackAdminResponse(FeedbackResponse):
+    organization_name: str
+    admin_note: str | None

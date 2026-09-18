@@ -12,6 +12,7 @@ import { KnowledgePage } from "../features/knowledge/KnowledgePage";
 import { MembersPage } from "../features/members/MembersPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { FeedbackPage } from "../features/feedback/FeedbackPage";
 
 function organizationOption(organization: OrganizationSummary): OrganizationOption {
   return {
@@ -34,6 +35,7 @@ function renderPage(view: View, identity: string, organization: OrganizationOpti
   if (view === "knowledge") return <KnowledgePage key={organization.id} canManage={canManageMembers} />;
   if (view === "members") return <MembersPage key={organization.id} canGrantAdministrator={canGrantAdministrator} />;
   if (view === "audit") return <AuditPage key={organization.id} />;
+  if (view === "feedback") return <FeedbackPage key={organization.id} isPlatformAdmin={actualRole === "Admin"} />;
   return <SettingsPage key={identity} currentName={identity} theme={theme} onToggleTheme={onToggleTheme} role={previewRole} actualRole={actualRole} onRoleChange={onRoleChange} onProfileUpdated={onProfileUpdated} />;
 }
 
@@ -81,5 +83,5 @@ export function AuthenticatedWorkspace({ session, onSessionUpdated, onSignedOut 
   const updateProfile = (profile: { user: AuthResponse["user"]; current_organization: OrganizationSummary; organizations: OrganizationSummary[] }) => onSessionUpdated({ ...session, ...profile });
   const toggleTheme = () => setTheme((current) => current === "light" ? "dark" : "light");
 
-  return <div className={`app-shell ${effectiveView === "chat" ? "app-shell-chat" : ""}`}><Sidebar view={effectiveView} items={visibleNav} organization={organization} identity={{ name: session.user.full_name, email: session.user.email }} role={actualRole} onNavigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onHelp={() => setHelpOpen(true)} /><div className="app-content"><Header organization={organization} organizations={organizations} identity={{ name: session.user.full_name, email: session.user.email }} signedIn role={previewRole} actualRole={actualRole} organizationSwitching={switchingOrganization} onOrganizationChange={(next) => void changeOrganization(next)} theme={theme} onToggleTheme={toggleTheme} onRoleChange={setPreviewRole} onOpenMenu={() => setSidebarOpen(true)} onSignOut={() => void signOut()} /><main className="page-content">{workspaceNotice && <div className="notice notice-error workspace-notice" role="alert">{workspaceNotice}<button onClick={() => setWorkspaceNotice("")} aria-label="Dismiss organization error">×</button></div>}{renderPage(effectiveView, session.user.full_name, organization, canManageMembers, canGrantAdministrator, previewRole, actualRole, theme, navigate, toggleTheme, setPreviewRole, updateProfile)}</main></div>{helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}</div>;
+  return <div className={`app-shell ${effectiveView === "chat" ? "app-shell-chat" : ""}`}><Sidebar view={effectiveView} items={visibleNav} organization={organization} identity={{ name: session.user.full_name, email: session.user.email }} role={actualRole} onNavigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onHelp={() => setHelpOpen(true)} onSignOut={() => void signOut()} /><div className="app-content"><Header organization={organization} organizations={organizations} identity={{ name: session.user.full_name, email: session.user.email }} signedIn role={previewRole} actualRole={actualRole} organizationSwitching={switchingOrganization} onOrganizationChange={(next) => void changeOrganization(next)} theme={theme} onToggleTheme={toggleTheme} onRoleChange={setPreviewRole} onOpenMenu={() => setSidebarOpen(true)} onSignOut={() => void signOut()} /><main className="page-content">{workspaceNotice && <div className="notice notice-error workspace-notice" role="alert">{workspaceNotice}<button onClick={() => setWorkspaceNotice("")} aria-label="Dismiss organization error">×</button></div>}{renderPage(effectiveView, session.user.full_name, organization, canManageMembers, canGrantAdministrator, previewRole, actualRole, theme, navigate, toggleTheme, setPreviewRole, updateProfile)}</main></div>{helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}</div>;
 }

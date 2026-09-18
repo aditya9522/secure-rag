@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 
-export type View = "overview" | "chat" | "knowledge" | "members" | "audit" | "settings";
+export type View = "overview" | "chat" | "knowledge" | "members" | "audit" | "feedback" | "settings";
 export type Role = "Admin" | "Organization" | "User";
 export type Theme = "light" | "dark";
 

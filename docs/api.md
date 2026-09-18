@@ -20,6 +20,12 @@
 - `GET /v1/conversations` / `GET /v1/conversations/{conversation_id}/messages` — tenant-scoped chat history;
   both endpoints accept bounded `limit` (1–100) and `offset` parameters.
 - `GET /v1/admin/metrics` / `GET /v1/admin/audit` — system-admin monitoring endpoints.
+- `POST /v1/feedback` / `GET /v1/feedback/mine` — submit feedback and view only the current user's
+  feedback in the active organization. Feedback is rate-limited, tenant-scoped, and stores a
+  reporter snapshot so the platform team can triage it safely.
+- `GET /v1/admin/feedback` / `PATCH /v1/admin/feedback/{feedback_id}` — platform-admin-only
+  feedback queue and review updates across organizations. The endpoint supports bounded
+  pagination and status/category filters; organization members cannot read this queue.
 - `POST /v1/query` — authenticated, tenant-isolated, ACL-filtered RAG query. When no
   `conversation_id` is supplied, the request creates its conversation and returns the
   resulting `conversation_id` so clients do not need a separate create call.
@@ -50,7 +56,7 @@ failed and attempts provider cleanup. High-volume deployments should move ingest
 to a durable external worker queue before increasing upload concurrency.
 
 PostgreSQL row-level security is enabled for documents, conversations, chat messages,
-and audit events. Authenticated request dependencies set transaction-local tenant
+audit events, and feedback. Authenticated request dependencies set transaction-local tenant
 context, while system-admin operations use an explicitly verified bypass context.
 
 This keeps natural chat useful without weakening the rule that organization facts must come from authorized sources.

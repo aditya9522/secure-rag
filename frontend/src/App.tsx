@@ -3,6 +3,7 @@ import "./App.css";
 import { onSessionExpired, refreshSession, type AuthResponse } from "./lib/api";
 import { AuthPage } from "./features/auth/AuthPage";
 import { AuthenticatedWorkspace } from "./app/AuthenticatedWorkspace";
+import { SessionLoadingScreen } from "./components/layout/SessionLoadingScreen";
 import { Toaster } from "react-hot-toast";
 
 function App() {
@@ -33,7 +34,7 @@ function App() {
   }, []);
 
   const content = !authChecked
-    ? <div className="auth-loading" role="status">Checking your secure session…</div>
+    ? <SessionLoadingScreen />
     : startupError
       ? <main className="auth-page"><section className="auth-page-panel"><div className="auth-form-card" role="alert"><div className="eyebrow accent-eyebrow">Setup required</div><h2>Workspace unavailable</h2><p className="auth-copy">{startupError}</p><button className="password-button" type="button" onClick={() => void checkSession()}>Try again</button></div></section></main>
     : !session

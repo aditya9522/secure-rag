@@ -51,6 +51,19 @@ class IngestionJobStatus(StrEnum):
     failed = "failed"
 
 
+class FeedbackStatus(StrEnum):
+    new = "new"
+    in_review = "in_review"
+    resolved = "resolved"
+    dismissed = "dismissed"
+
+
+class FeedbackPriority(StrEnum):
+    low = "low"
+    normal = "normal"
+    high = "high"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -265,3 +278,48 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(80), index=True)
     event_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class Feedback(Base):
+    """Tenant-scoped product feedback with a durable reporter snapshot."""
+
+    __tablename__ = "feedback"
+    __table_args__ = (
+        Index("ix_feedback_org_created", "organization_id", "created_at"),
+        Index("ix_feedback_status_created", "status", "created_at"),
+        CheckConstraint(
+            "category IN ('bug', 'feature_request', 'answer_quality', 'access', 'general')",
+            name="ck_feedback_category",
+        ),
+        CheckConstraint("rating IS NULL OR rating BETWEEN 1 AND 5", name="ck_feedback_rating"),
+        CheckConstraint(
+            "status IN ('new', 'in_review', 'resolved', 'dismissed')",
+            name="ck_feedback_status",
+        ),
+        CheckConstraint(
+            "priority IN ('low', 'normal', 'high')",
+            name="ck_feedback_priority",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    reporter_name: Mapped[str] = mapped_column(String(160))
+    reporter_email: Mapped[str] = mapped_column(String(320))
+    category: Mapped[str] = mapped_column(String(32))
+    subject: Mapped[str] = mapped_column(String(120))
+    message: Mapped[str] = mapped_column(Text)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_page: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default=FeedbackStatus.new.value)
+    priority: Mapped[str] = mapped_column(String(20), default=FeedbackPriority.normal.value)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
